@@ -9,6 +9,9 @@
 #include <random>
 #include <algorithm>
 
+#define USE_TABLE
+//#define USE_KILLER
+
 std::random_device rd; 
 std::mt19937 rng(rd()); // Ugh, only 32 bits of seed.
 
@@ -28,29 +31,6 @@ constexpr int MAX_LEGAL_MOVES = 4 * 5 * 2;
 static inline SquareDelta offset_to_delta(std::pair<int, int> p) {
 	return p.first + 8 * p.second;
 }
-
-/*
-static inline int snp_random_number() {
-	static uint16_t lfsr = 0xc0fe;
-	lfsr ^= lfsr >> 7;
-	lfsr ^= lfsr << 9;
-	lfsr ^= lfsr >> 13;
-	return lfsr;
-}
-
-template <typename T>
-static inline void snp_shuffle(T* a, int length) {
-	assert(1 <= length and length <= 40);
-	for (int i = 1; i < length; i++) {
-//		int swap_index = std::uniform_int_distribution<int>(0, i)(rng);
-		int swap_index = snp_random_number() % (i + 1);
-//		T tmp = a[i];
-//		a[i] = a[swap_index];
-//		a[swap_index] = tmp;
-		std::swap(a[i], a[swap_index]);
-	}
-}
-*/
 
 std::vector<std::vector<std::pair<int, int>>> cards_source{
 	// Rabbit
@@ -140,11 +120,30 @@ static void setup_onitama() {
 // A move is encoded as the sum:
 //   [8 bits] (which square to move to) +
 //   [3 bits] (which piece to pick up) << 8 +
-//   [1 bit ] (which card from the hand to use) << 11
+//   [1 bit ] (which card from the hand to use) << 11 +
+//   [4 bits] (which card is being used) << 12
 typedef uint16_t Move;
 
+constexpr Move BAD_MOVE = -1;
+
+static inline void swap_gate(uint8_t& x, uint8_t& y) {
+	if (x > y)
+		std::swap(x, y);
+}
+
+static inline void length_two_sort(uint8_t* x) {
+	swap_gate(x[0], x[1]);
+}
+
+static inline void length_four_sort(uint8_t* x) {
+	swap_gate(x[0], x[2]);
+	swap_gate(x[1], x[3]);
+	swap_gate(x[0], x[1]);
+	swap_gate(x[2], x[3]);
+	swap_gate(x[1], x[2]);
+}
+
 struct OnitamaState {
-//	uint64_t unoccupied_cells;
 	Square white_pieces[5];
 	Square black_pieces[5];
 	Card white_hand[2];
@@ -170,26 +169,31 @@ struct OnitamaState {
 		result.black_hand[1] = hand_state[3];
 		result.swap_card     = hand_state[4];
 		result.turn = Player::WHITE;
-//		result.unoccupied_cells = 0;
-//		for (int y = 1; y < 4; y++)
-//			for (int x = 0; x < 5; x++)
-//				result.unoccupied_cells |= 1ull << offset_to_delta({x, y});
 		return result;
 	}
 
 	// Sort pieces for hashing and computing transpositions.
 	void canonicalize() {
+		length_four_sort(&white_pieces[1]);
+		length_four_sort(&black_pieces[1]);
+		length_two_sort(&white_hand[0]);
+		length_two_sort(&black_hand[0]);
 	}
 
-	template <bool only_captures=false>
+	template <bool only_loud_moves=false>
 	int move_gen(Move* move_buffer) const {
 		const Square* our_pieces   = turn == Player::WHITE ? white_pieces : black_pieces;
 		const Square* their_pieces = turn == Player::WHITE ? black_pieces : white_pieces;
 		const Card* our_hand = turn == Player::WHITE ? white_hand : black_hand;
 		int gen_count = 0;
 		Move* next_output = move_buffer;
+
+		int quiet_moves = 0;
+		Move quiet_move_scratch[MAX_LEGAL_MOVES];
+
 		// Try all of our pieces.
-		for (int piece_index = 0; piece_index < 5; piece_index++) {
+//		for (int piece_index = 0; piece_index < 5; piece_index++) {
+		for (int piece_index : {1, 2, 3, 4, 0}) {
 			if (our_pieces[piece_index] == PIECE_CAPTURED)
 				continue;
 			// Try both cards.
@@ -207,22 +211,34 @@ struct OnitamaState {
 						continue;
 					if (dest == our_pieces[0] or dest == our_pieces[1] or dest == our_pieces[2] or dest == our_pieces[3] or dest == our_pieces[4])
 						continue;
-					if (only_captures and not (dest == their_pieces[0] or dest == their_pieces[1] or dest == their_pieces[2] or dest == their_pieces[3] or dest == their_pieces[4]))
+					// All captures are loud moves.
+					bool is_loud_move = dest == their_pieces[0] or dest == their_pieces[1] or dest == their_pieces[2] or dest == their_pieces[3] or dest == their_pieces[4];
+					// A move that wins by temple-capture is loud.
+					is_loud_move |= piece_index == 0 and (
+						(turn == Player::WHITE and dest == offset_to_delta({2, 4})) or
+						(turn == Player::BLACK and dest == offset_to_delta({2, 0}))
+					);
+
+					if (only_loud_moves and not is_loud_move)
 						continue;
 //					if (not (unoccupied_cells & (1ull << dest)))
 //						continue;
 					assert(dest < 256);
-					Move move = dest + (piece_index << 8) + (hand_index << 11);
-					*next_output++ = move;
-					gen_count++;
+					Move move = dest + (piece_index << 8) + (hand_index << 11) + (((Move)card) << 12);
+					if (is_loud_move) {
+						*next_output++ = move;
+						gen_count++;
+					} else {
+						quiet_move_scratch[quiet_moves++] = move;
+					}
 				}
 			}
 		}
+		for (int i = 0; i < quiet_moves; i++) {
+			*next_output++ = quiet_move_scratch[i];
+			gen_count++;
+		}
 		assert(gen_count <= MAX_LEGAL_MOVES);
-		// Output moves in a random order.
-//		snp_shuffle<Move>(move_buffer, gen_count);
-//		std::random_shuffle(&move_buffer[0], &move_buffer[gen_count]);
-//		std::shuffle(&move_buffer[0], &move_buffer[gen_count], rng);
 		return gen_count;
 	}
 
@@ -249,7 +265,7 @@ struct OnitamaState {
 		Card* our_hand = turn == Player::WHITE ? white_hand : black_hand;
 		Square dest = m;
 		int piece_index = (m >> 8) & 7;
-		int hand_index = m >> 11;
+		int hand_index = (m >> 11) & 1;
 		Square source = our_pieces[piece_index];
 //		unoccupied_cells |= 1ull << source;
 //		unoccupied_cells &= ~(1ull << dest);
@@ -261,6 +277,7 @@ struct OnitamaState {
 		// Change cards in hands.
 		std::swap(our_hand[hand_index], swap_card);
 		turn = static_cast<Player>(1 - turn);
+		canonicalize();
 //		sanity_check();
 	}
 
@@ -274,6 +291,182 @@ struct OnitamaState {
 		if (black_pieces[0] == offset_to_delta({2, 0}))
 			return Player::BLACK;
 		return Player::NOBODY;
+	}
+};
+
+#if 0
+
+int default_king_score_table[40] = {
+	 0,  1,  2,  1,  0,   0, 0, 0,
+	 1,  2,  3,  2,  1,   0, 0, 0,
+	 5, 12, 15, 12,  5,   0, 0, 0,
+	 5, 20, 30, 20,  5,   0, 0, 0,
+	-5, 10,  0, 10, -5,   0, 0, 0,
+};
+
+int default_pawn_score_table[40] = {
+	  0,   1,  2,  1,   0,   0, 0, 0,
+	  1,   2,  3,  2,   1,   0, 0, 0,
+	  2,   7, 10,  7,   2,   0, 0, 0,
+	  0,   2,  3,  2,   0,   0, 0, 0,
+	-10,  -5, -3, -5, -10,   0, 0, 0,
+};
+
+#else
+
+std::vector<int> default_king_score_table{
+	-35, -19,  13, -19, -35,   0, 0, 0,
+	-21,  -9,  -2,  -9, -21,   0, 0, 0,
+	-18,  36,  59,  36, -18,   0, 0, 0,
+	 70, 147, 147, 147,  70,   0, 0, 0,
+	107, 167, 200, 167, 107,   0, 0, 0,
+};
+
+std::vector<int> default_pawn_score_table{
+	-5,  -2, -13,  -2,  -5,   0, 0, 0,
+	 2,  14,  15,  14,   2,   0, 0, 0,
+	17,  44,  68,  44,  17,   0, 0, 0,
+	31,  75, 104,  75,  31,   0, 0, 0,
+	26,  48,  58,  48,  26,   0, 0, 0,
+};
+
+#endif
+
+uint64_t state_to_hash(const OnitamaState& state) {
+	const uint64_t* as_blocks = reinterpret_cast<const uint64_t*>(&state);
+	return as_blocks[0] + as_blocks[1]  * 7;
+}
+
+struct OnitamaEngine {
+	std::unordered_map<uint64_t, Move> move_order_table;
+	uint64_t nodes_reached = 0;
+	int play_randomization = 0;
+	std::vector<int> king_score_table = default_king_score_table;
+	std::vector<int> pawn_score_table = default_pawn_score_table;
+	std::vector<Move> killer_moves{std::vector<Move>(100, BAD_MOVE)};
+
+	int heuristic_score(const OnitamaState& state) {
+		// Get one point for each.
+		Player result = state.game_result();
+		if (result != Player::NOBODY)
+			return result == state.turn ? 99999 : -99999;
+
+		// Tempo bonus.
+		int score_for_white = state.turn == Player::WHITE ? 15 : -15;
+		score_for_white += king_score_table[state.white_pieces[0]] / 2;
+		score_for_white -= king_score_table[36 - state.black_pieces[0]] / 2;
+		for (int i = 1; i < 5; i++) {
+			if (state.white_pieces[i] == PIECE_CAPTURED)
+				score_for_white -= 100;
+			else
+				score_for_white += pawn_score_table[state.white_pieces[i]] / 2;
+			if (state.black_pieces[i] == PIECE_CAPTURED)
+				score_for_white += 100;
+			else
+				score_for_white -= pawn_score_table[36 - state.black_pieces[i]] / 2;
+		}
+		return state.turn == Player::WHITE ? score_for_white : -score_for_white;
+	}
+
+	template <bool quiescence=false>
+	int pvs(const OnitamaState& state, int depth, int alpha, int beta) {
+		nodes_reached++;
+		Player result = state.game_result();
+		if (depth == 0 or result != Player::NOBODY) {
+			if (quiescence)
+				return heuristic_score(state);
+			return pvs<true>(state, 10, alpha, beta);
+		}
+
+		constexpr int MAX_PADDING = 2;
+		Move raw_moves[MAX_LEGAL_MOVES + MAX_PADDING];
+		Move* moves = raw_moves + MAX_PADDING;
+
+		int move_count = state.move_gen<quiescence>(moves);
+		if (quiescence and move_count == 0)
+			return heuristic_score(state);
+		assert(move_count > 0);
+
+		auto promote_move = [&moves, &move_count](Move m) {
+			// Move this move to the front of the queue.
+			for (int i = 0; i < move_count; i++) {
+				if (moves[i] == m) {
+					moves[i] = BAD_MOVE;
+					moves--;
+					moves[0] = m;
+					move_count++;
+					break;
+				}
+			}
+		};
+
+#ifdef USE_KILLER
+		// If we have a killer move order that front.
+		if ((not quiescence) and killer_moves[depth] != BAD_MOVE)
+			promote_move(killer_moves[depth]);
+#endif
+
+#ifdef USE_TABLE
+		uint64_t state_hash;
+		// Reorder our moves according to our table.
+		if (not quiescence) {
+			state_hash = state_to_hash(state);
+			auto it = move_order_table.find(state_hash);
+			if (it != move_order_table.end())
+				promote_move(it->second);
+		}
+#endif
+
+		for (int i = 0; i < move_count; i++) {
+			// Skip sentinels.
+			if (moves[i] == BAD_MOVE)
+				continue;
+			OnitamaState child_state = state;
+			child_state.make_move(moves[i]);
+
+			int score;
+			if (i == 0) {
+				score = -pvs<quiescence>(child_state, depth - 1, -beta, - alpha);
+			} else {
+				score = -pvs<quiescence>(child_state, depth - 1, -alpha - 1, -alpha);
+				if (alpha < score and score < beta)
+					score = -pvs<quiescence>(child_state, depth - 1, -beta, -score);
+			}
+#ifdef USE_TABLE
+			if (score > alpha and not quiescence)
+				move_order_table[state_hash] = moves[i];
+#endif
+			alpha = std::max(alpha, score);
+			if (alpha >= beta) {
+#ifdef USE_KILLER
+				if (not quiescence)
+					killer_moves[depth] = moves[i];
+#endif
+				break;
+			}
+		}
+		return alpha;
+	}
+
+	Move compute_best_move(const OnitamaState& state, int depth) {
+		Move moves[MAX_LEGAL_MOVES];
+		int move_count = state.move_gen(moves);
+		int best_score_so_far = -10000;
+		Move best_move;
+		for (int i = 0; i < move_count; i++) {
+			OnitamaState child_state = state;
+			child_state.make_move(moves[i]);
+			// Iteratively deepen.
+			int score;
+			for (int i_depth = 1; i_depth <= depth; i_depth++)
+				score = -pvs(child_state, i_depth, -10000, 10000);
+			score += std::uniform_int_distribution<int>(0, play_randomization)(rng);
+			if (score > best_score_so_far) {
+				best_score_so_far = score;
+				best_move = moves[i];
+			}
+		}
+		return best_move;
 	}
 };
 
@@ -307,16 +500,13 @@ std::string move_to_string(Move m) {
 	Square dest = m;
 	int x = dest % 8;
 	int y = dest / 8;
-	int piece = (m >> 8) % 7;
-	int hand_index = m >> 11;
+	int piece = (m >> 8) & 7;
+	int hand_index = (m >> 11) & 1;
 	return std::to_string(x) + "," + std::to_string(y) + "p" + std::to_string(piece) + "h" + std::to_string(hand_index);
 }
 
-int negamax(const OnitamaState& state, int depth);
-
 void print_state(const OnitamaState& state) {
-	int nm_score = negamax(state, 6);
-	std::cout << "Turn: " << player_to_string(state.turn) << " score from their perspective: " << nm_score << std::endl;
+	std::cout << "Turn: " << player_to_string(state.turn) << std::endl;
 	int contains[40]{};
 	if (state.white_pieces[0] != PIECE_CAPTURED) {
 		contains[state.white_pieces[0]] = 1;
@@ -350,211 +540,15 @@ void print_state(const OnitamaState& state) {
 
 }
 
-#if 0
-int king_score_table[40] = {
-	 0,  1,  2,  1,  0,   0, 0, 0,
-	 1,  2,  3,  2,  1,   0, 0, 0,
-	 5, 12, 15, 12,  5,   0, 0, 0,
-	 5, 20, 30, 20,  5,   0, 0, 0,
-	-5, 10,  0, 10, -5,   0, 0, 0,
-};
-
-int pawn_score_table[40] = {
-	  0,   1,  2,  1,   0,   0, 0, 0,
-	  1,   2,  3,  2,   1,   0, 0, 0,
-	  2,   7, 10,  7,   2,   0, 0, 0,
-	  0,   2,  3,  2,   0,   0, 0, 0,
-	-10,  -5, -3, -5, -10,   0, 0, 0,
-};
-#else
-int king_score_table[40] = {
-	-35, -19,  13, -19, -35,   0, 0, 0,
-	-21,  -9,  -2,  -9, -21,   0, 0, 0,
-	-18,  36,  59,  36, -18,   0, 0, 0,
-	 70, 147, 147, 147,  70,   0, 0, 0,
-	107, 167, 200, 167, 107,   0, 0, 0,
-};
-
-int pawn_score_table[40] = {
-	-5,  -2, -13,  -2,  -5,   0, 0, 0,
-	 2,  14,  15,  14,   2,   0, 0, 0,
-	17,  44,  68,  44,  17,   0, 0, 0,
-	31,  75, 104,  75,  31,   0, 0, 0,
-	26,  48,  58,  48,  26,   0, 0, 0,
-};
-#endif
-
-int heuristic_score(const OnitamaState& state) {
-	// Get one point for each.
-	Player result = state.game_result();
-	if (result != Player::NOBODY)
-		return result == state.turn ? 999 : -999;
-
-	// Tempo bonus.
-	int score_for_white = state.turn == Player::WHITE ? 15 : -15;
-	score_for_white += king_score_table[state.white_pieces[0]] / 2;
-	score_for_white -= king_score_table[36 - state.black_pieces[0]] / 2;
-	for (int i = 1; i < 5; i++) {
-		if (state.white_pieces[i] == PIECE_CAPTURED)
-			score_for_white -= 100;
-		else
-			score_for_white += pawn_score_table[state.white_pieces[i]] / 2;
-		if (state.black_pieces[i] == PIECE_CAPTURED)
-			score_for_white += 100;
-		else
-			score_for_white -= pawn_score_table[36 - state.black_pieces[i]] / 2;
-	}
-	return state.turn == Player::WHITE ? score_for_white : -score_for_white;
-}
-
-uint64_t nodes_reached = 0;
-
-std::pair<int, std::vector<Move>> negamax_with_pv(const OnitamaState& state, int depth) {
-	nodes_reached++;
-	Player result = state.game_result();
-	if (depth == 0 or result != Player::NOBODY)
-		return {heuristic_score(state), {}};
-
-	int score_for_us = -1234;
-	Move moves[MAX_LEGAL_MOVES];
-	int move_count = state.move_gen(moves);
-	assert(move_count != 0);
-	Move pv_move = -1;
-	std::vector<Move> pv;
-
-	for (int i = 0; i < move_count; i++) {
-		OnitamaState child_state = state;
-		child_state.make_move(moves[i]);
-		auto p = negamax_with_pv(child_state, depth - 1);
-		int sub_score = -p.first;
-		if (sub_score > score_for_us) {
-			pv_move = moves[i];
-			score_for_us = sub_score;
-			pv = p.second;
-		}
-//		score_for_us = std::max(score_for_us, );
-	}
-	pv.push_back(pv_move);
-	return {score_for_us, pv}; 
-//	return score_for_us;
-}
-
-int negamax_with_ab(const OnitamaState& state, int depth, int alpha, int beta) {
-	nodes_reached++;
-	Player result = state.game_result();
-	if (depth == 0 or result != Player::NOBODY)
-		return heuristic_score(state);
-
-	int score_for_us = -12345;
-	Move moves[MAX_LEGAL_MOVES];
-	int move_count = state.move_gen(moves);
-	assert(move_count != 0);
-
-	for (int i = 0; i < move_count; i++) {
-		OnitamaState child_state = state;
-		child_state.make_move(moves[i]);
-		int value = -negamax_with_ab(child_state, depth - 1, -beta, -alpha);
-		score_for_us = std::max(score_for_us, value);
-		alpha = std::max(alpha, score_for_us);
-		if (alpha >= beta)
-			break;
-	}
-	return score_for_us;
-}
-
-int negamax(const OnitamaState& state, int depth) {
-	return negamax_with_ab(state, depth, -10000, 10000);
-}
-
-template <bool quiescence=false>
-int pvs(const OnitamaState& state, int depth, int alpha, int beta) {
-	nodes_reached++;
-	Player result = state.game_result();
-	if (depth == 0 or result != Player::NOBODY) {
-		if (quiescence)
-			return heuristic_score(state);
-		return pvs<true>(state, 10, alpha, beta);
-	}
-
-	Move moves[MAX_LEGAL_MOVES];
-	int move_count = state.move_gen<quiescence>(moves);
-	if (quiescence and move_count == 0)
-		return heuristic_score(state);
-	assert(move_count > 0);
-
-	for (int i = 0; i < move_count; i++) {
-		OnitamaState child_state = state;
-		child_state.make_move(moves[i]);
-
-		int score;
-		if (i == 0) {
-			score = -pvs<quiescence>(child_state, depth - 1, -beta, - alpha);
-		} else {
-			score = -pvs<quiescence>(child_state, depth - 1, -alpha - 1, -alpha);
-//			assert(alpha < score);
-//			if (not (alpha < score))
-//				std::cerr << "Uh oh: " << alpha << " " << score << std::endl;
-			if (alpha < score and score < beta)
-				score = -pvs<quiescence>(child_state, depth - 1, -beta, -score);
-		}
-		alpha = std::max(alpha, score);
-		if (alpha >= beta)
-			break;
-	}
-	return alpha;
-}
-
-int perft(const OnitamaState& state, int depth) {
-	if (depth == 0)
-		return 1;
-	Move moves[MAX_LEGAL_MOVES];
-	int move_count = state.move_gen(moves);
-	int count = 1;
-	for (int i = 0; i < move_count; i++) {
-		OnitamaState child_state = state;
-		child_state.make_move(moves[i]);
-		count += perft(child_state, depth - 1);
-	}
-	return count;
-}
-
-Move compute_best_move(const OnitamaState& state, int depth) {
-	Move moves[MAX_LEGAL_MOVES];
-	int move_count = state.move_gen(moves);
-	int best_score_so_far = -10000;
-//	std::vector<Move> pv;
-	Move best_move;
-	for (int i = 0; i < move_count; i++) {
-		OnitamaState child_state = state;
-		child_state.make_move(moves[i]);
-//		int score = -negamax(child_state, depth);
-		int score = -pvs(child_state, depth, -10000, 10000);
-//		assert(score == score_pvs);
-//		auto p = negamax_with_pv(child_state, depth);
-//		int score = -p.first;
-//		std::cout << "Move: " << moves[i] << " Score: " << score << std::endl;
-		if (score > best_score_so_far) {
-			best_score_so_far = score;
-			best_move = moves[i];
-//			pv = p.second;
-		}
-	}
-	/*
-	std::cout << "PV:";
-	for (int i = 0; i < pv.size(); i++) {
-		std::cout << " " << move_to_string(pv[pv.size() - i - 1]);
-	}
-	std::cout << std::endl;
-	*/
-	return best_move;
-}
+// ===== Interface =====
 
 void play_interface(OnitamaState state) {
+	OnitamaEngine engine;
 	while (state.game_result() == Player::NOBODY) {
 		std::cout << std::endl;
 		print_state(state);
-		Move found_move = -1;
-		while (found_move == (Move)-1) {
+		Move found_move = BAD_MOVE;
+		while (found_move == BAD_MOVE) {
 			std::cout << "Input move as: hand_index source_x source_y dest_x dest_y: " << std::endl;
 			int hand_index, source_x, source_y, dest_x, dest_y;
 			std::cin >> hand_index;
@@ -562,7 +556,6 @@ void play_interface(OnitamaState state) {
 			std::cin >> source_y;
 			std::cin >> dest_x;
 			std::cin >> dest_y;
-//			std::cout << "Got: " << hand_index << " " << source_x << " " << source_y << " " << dest_x << " " << dest_y << std::endl;
 			Move moves[MAX_LEGAL_MOVES];
 			int move_count = state.move_gen(moves);
 			for (int i = 0; i < move_count; i++) {
@@ -570,7 +563,7 @@ void play_interface(OnitamaState state) {
 				Move m = moves[i];
 				Square dest = m;
 				int piece_index = (m >> 8) & 7;
-				int m_hand_index = m >> 11;
+				int m_hand_index = (m >> 11) & 1;
 				const Square* our_pieces = state.turn == Player::WHITE ? state.white_pieces : state.black_pieces;
 				Square source = our_pieces[piece_index];
 				if (source == offset_to_delta({source_x, source_y}) and dest == offset_to_delta({dest_x, dest_y}) and hand_index == m_hand_index)
@@ -583,18 +576,16 @@ void play_interface(OnitamaState state) {
 		print_state(state);
 		if (state.game_result() != Player::NOBODY)
 			break;
-		Move opponent_move = compute_best_move(state, 9);
+		Move opponent_move = engine.compute_best_move(state, 9);
 		state.make_move(opponent_move);
 	}
 	std::cout << "Winner: " << player_to_string(state.game_result()) << std::endl;
 }
 
-int self_play_game(std::vector<int>& king_wins, std::vector<int>& king_losses, std::vector<int>& pawn_wins, std::vector<int>& pawn_losses) {
+int calibration_self_play_game(OnitamaEngine& engine, std::vector<int>& king_wins, std::vector<int>& king_losses, std::vector<int>& pawn_wins, std::vector<int>& pawn_losses) {
 	Card hand_state[16];
 	for (int i = 0; i < 16; i++)
 		hand_state[i] = i;
-//	snp_shuffle<Card>(hand_state, 16);
-//	std::random_shuffle(&hand_state[0], &hand_state[16]);
 	std::shuffle(&hand_state[0], &hand_state[16], rng);
 	auto state = OnitamaState::starting_state(hand_state);
 	int plies = 0;
@@ -605,7 +596,7 @@ int self_play_game(std::vector<int>& king_wins, std::vector<int>& king_losses, s
 		dest.at(location)++;
 	};
 	while (state.game_result() == Player::NOBODY) {
-		Move m = compute_best_move(state, 4);
+		Move m = engine.compute_best_move(state, 3);
 		state.make_move(m);
 		track_piece(state.white_pieces[0], white_king_occurences);
 		track_piece(state.black_pieces[0], black_king_occurences);
@@ -635,16 +626,16 @@ int self_play_game(std::vector<int>& king_wins, std::vector<int>& king_losses, s
 	return plies;
 }
 
-int main() {
-	setup_onitama();
-
-/*
+void do_self_play_piece_table_calibration() {
 	std::vector<int> king_wins(40), king_losses(40);
 	std::vector<int> pawn_wins(40), pawn_losses(40);
 
-	for (int i = 0; i < 10000; i++) {
-		int plies = self_play_game(king_wins, king_losses, pawn_wins, pawn_losses);
-		if (i % 100 == 0)
+	OnitamaEngine engine;
+	engine.play_randomization = 20;
+
+	for (int i = 0; i < 100; i++) {
+		int plies = calibration_self_play_game(engine, king_wins, king_losses, pawn_wins, pawn_losses);
+		if (i % 10 == 0)
 			std::cout << "[" << i << "] Generated game of: " << plies << std::endl;
 	}
 
@@ -677,22 +668,96 @@ int main() {
 		if (king_wins[i] + king_losses[i] == 0)
 			continue;
 		double proportion = king_wins[i] / (double)(king_wins[i] + king_losses[i]);
-		king_value[i] = 20000 * (proportion - 0.5);
+		king_value[i] = 100000 * (proportion - 0.5);
 	}
 	for (int i = 0; i < 40; i++) {
 		if (pawn_wins[i] + pawn_losses[i] == 0)
 			continue;
 		double proportion = pawn_wins[i] / (double)(pawn_wins[i] + pawn_losses[i]);
-		pawn_value[i] = 20000 * (proportion - 0.5);
+		pawn_value[i] = 100000 * (proportion - 0.5);
 	}
 	std::cout << "king_table = "; print_table(king_value); std::cout << std::endl;
 	std::cout << "pawn_table = "; print_table(pawn_value); std::cout << std::endl;
 
-	std::cout << "Total value: " << total << std::endl;
-	std::cout << "Nodes: " << nodes_reached << std::endl;
+	// Average over reflections.
+	for (int y = 0; y < 5; y++) {
+		for (int x = 0; x < 3; x++) {
+			king_value[offset_to_delta({x, y})] += king_value[offset_to_delta({4 - x, y})];
+			king_value[offset_to_delta({4 - x, y})] = king_value[offset_to_delta({x, y})];
+			pawn_value[offset_to_delta({x, y})] += pawn_value[offset_to_delta({4 - x, y})];
+			pawn_value[offset_to_delta({4 - x, y})] = pawn_value[offset_to_delta({x, y})];
+		}
+	}
 
-	return 0;
-*/
+	for (int i = 0; i < 40; i++) {
+		king_value[i] /= 1000;
+		pawn_value[i] /= 1000;
+	}
+
+	std::cout << "Symmetrized:" << std::endl;
+	std::cout << "king_table = "; print_table(king_value); std::cout << std::endl;
+	std::cout << "pawn_table = "; print_table(pawn_value); std::cout << std::endl;
+	std::cout << "Nodes explored: " << engine.nodes_reached << std::endl;
+	std::cout << "Table size: " << engine.move_order_table.size() << std::endl;
+}
+
+// ===== Elo tournament =====
+
+Player elo_self_play_game(OnitamaEngine& engine1, OnitamaEngine& engine2) {
+	Card hand_state[16];
+	for (int i = 0; i < 16; i++)
+		hand_state[i] = i;
+	std::shuffle(&hand_state[0], &hand_state[16], rng);
+	auto state = OnitamaState::starting_state(hand_state);
+	int plies = 0;
+	while (state.game_result() == Player::NOBODY) {
+		Move m = (plies % 2 == 0 ? engine1 : engine2).compute_best_move(state, 3);
+		state.make_move(m);
+		plies++;
+		if (plies >= 100)
+			break;
+	}
+	return state.game_result();
+}
+
+void do_elo_testing() {
+	auto fill_with_scale = [](OnitamaEngine& engine, double scale) {
+		for (int i = 0; i < 40; i++) {
+			engine.king_score_table[i] = scale * default_king_score_table[i];
+			engine.pawn_score_table[i] = scale * default_pawn_score_table[i];
+		}
+	};
+
+	OnitamaEngine engine1;
+	OnitamaEngine engine2;
+	engine1.play_randomization = 10;
+	engine2.play_randomization = 10;
+	fill_with_scale(engine1, 1.0);
+	fill_with_scale(engine2, -1.0);
+
+	int wins[2]{};
+	for (int i = 0; i < 100; i++) {
+		Player result = elo_self_play_game(engine1, engine2);
+		if (result == Player::WHITE)
+			wins[0]++;
+		if (result == Player::BLACK)
+			wins[1]++;
+		result = elo_self_play_game(engine2, engine1);
+		if (result == Player::WHITE)
+			wins[1]++;
+		if (result == Player::BLACK)
+			wins[0]++;
+		std::cout << "Score: " << wins[0] << " - " << wins[1] << std::endl;
+	}
+
+}
+
+int main() {
+	setup_onitama();
+
+//	do_elo_testing();
+//	do_self_play_piece_table_calibration();
+//	return 0;
 
 //	Move moves[MAX_LEGAL_MOVES];
 	uint8_t hand_state[] = {0, 1, 13, 3, 4};
@@ -700,9 +765,16 @@ int main() {
 	auto state = OnitamaState::starting_state(hand_state);
 
 //	std::cout << "Root score: " << negamax(state, 11) << std::endl;
-	for (int depth = 0; depth < 15; depth++) {
-		std::cout << "Depth: " << depth << " Root score: " << pvs(state, depth, -10000, 10000) << std::endl;
+
+	OnitamaEngine engine;
+
+	for (int depth = 1; depth <= 13; depth++) {
+//		int score = engine.pvs(state, depth, -10000, 10000);
+		int score = engine.pvs(state, depth, -10000, 10000);
+		std::cout << "Depth: " << depth << " Root score: " << score << std::endl;
 	}
+	std::cout << "Nodes explored: " << engine.nodes_reached << std::endl;
+	std::cout << "Table size: " << engine.move_order_table.size() << std::endl;
 
 	return 0;
 
@@ -715,6 +787,7 @@ int main() {
 //	state.sanity_check();
 //	negamax(state, 2);
 
+/*
 	for (int depth = 0; depth < 15; depth++) {
 		int nodes = perft(state, depth);
 		int nm_score = negamax(state, depth);
@@ -722,5 +795,6 @@ int main() {
 	}
 
 	std::cout << "Total nodes: " << nodes_reached << std::endl;
+*/
 }
 
