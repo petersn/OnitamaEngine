@@ -14,6 +14,7 @@
 
 std::random_device rd; 
 std::mt19937 rng(rd()); // Ugh, only 32 bits of seed.
+//std::mt19937 rng(10001);
 
 enum Player : uint8_t {
 	WHITE  = 0,
@@ -86,6 +87,41 @@ std::vector<std::string> card_names {
 	"Eel",
 };
 
+std::vector<int> card_score {
+	// Rabbit
+	3,
+	// Cobra
+	2,
+	// Rooster
+	4,
+	// Tiger
+	7,
+	// Monkey
+	5,
+	// Crab
+	6,
+	// Crane
+	2,
+	// Frog
+	3,
+	// Boar
+	5,
+	// Horse
+	2,
+	// Elephant
+	5,
+	// Ox
+	2,
+	// Goose
+	4,
+	// Dragon
+	6,
+	// Mantis
+	3,
+	// Eel
+	3,
+};
+
 struct CardDesc {
 	int jump_count;
 	SquareDelta jumps[4];
@@ -143,6 +179,9 @@ static inline void length_four_sort(uint8_t* x) {
 	swap_gate(x[1], x[2]);
 }
 
+constexpr int PRIORITY_COUNT = 5;
+Move moves_scratch[PRIORITY_COUNT][MAX_LEGAL_MOVES];
+
 struct OnitamaState {
 	Square white_pieces[5];
 	Square black_pieces[5];
@@ -185,11 +224,17 @@ struct OnitamaState {
 		const Square* our_pieces   = turn == Player::WHITE ? white_pieces : black_pieces;
 		const Square* their_pieces = turn == Player::WHITE ? black_pieces : white_pieces;
 		const Card* our_hand = turn == Player::WHITE ? white_hand : black_hand;
-		int gen_count = 0;
-		Move* next_output = move_buffer;
+//		int gen_count = 0;
+//		Move* next_output = move_buffer;
 
-		int quiet_moves = 0;
-		Move quiet_move_scratch[MAX_LEGAL_MOVES];
+		int moves_by_priority[PRIORITY_COUNT]{};
+
+//		int quiet_moves = 0;
+//		Move quiet_move_scratch[MAX_LEGAL_MOVES];
+
+		Card sorted_hand[2] = {our_hand[0], our_hand[1]};
+		if (card_score[sorted_hand[0]] < card_score[sorted_hand[1]])
+			std::swap(sorted_hand[0], sorted_hand[1]);
 
 		// Try all of our pieces.
 //		for (int piece_index = 0; piece_index < 5; piece_index++) {
@@ -198,12 +243,12 @@ struct OnitamaState {
 				continue;
 			// Try both cards.
 			for (int hand_index = 0; hand_index < 2; hand_index++) {
-				Card card = our_hand[hand_index];
+				Card card = sorted_hand[hand_index];
 				const CardDesc& card_desc = cards[card];
 				// Try all jumps for this card.
 				for (int jump_index = 0; jump_index < card_desc.jump_count; jump_index++) {
-					SquareDelta jump = card_desc.jumps[jump_index];
-					jump = turn == Player::WHITE ? jump : -jump;
+					SquareDelta original_jump = card_desc.jumps[jump_index];
+					SquareDelta jump = turn == Player::WHITE ? original_jump : -original_jump;
 					int dest = jump + int(our_pieces[piece_index]);
 					if (dest < 0)
 						continue;
@@ -211,32 +256,61 @@ struct OnitamaState {
 						continue;
 					if (dest == our_pieces[0] or dest == our_pieces[1] or dest == our_pieces[2] or dest == our_pieces[3] or dest == our_pieces[4])
 						continue;
-					// All captures are loud moves.
-					bool is_loud_move = dest == their_pieces[0] or dest == their_pieces[1] or dest == their_pieces[2] or dest == their_pieces[3] or dest == their_pieces[4];
-					// A move that wins by temple-capture is loud.
-					is_loud_move |= piece_index == 0 and (
+					// All captures or winning moves are loud.
+					bool is_winning = dest == their_pieces[0] or (piece_index == 0 and (
 						(turn == Player::WHITE and dest == offset_to_delta({2, 4})) or
 						(turn == Player::BLACK and dest == offset_to_delta({2, 0}))
-					);
+					));
+					bool is_loud_move = is_winning or dest == their_pieces[1] or dest == their_pieces[2] or dest == their_pieces[3] or dest == their_pieces[4];
 
 					if (only_loud_moves and not is_loud_move)
 						continue;
-//					if (not (unoccupied_cells & (1ull << dest)))
-//						continue;
+
+					// Determine if we move a king Moore-adjacent to an enemy temple.
+					bool temple_threatening = piece_index == 0 and (
+						(turn == Player::WHITE and (
+//							dest == offset_to_delta({1, 4}) or
+							dest == offset_to_delta({1, 3}) or
+							dest == offset_to_delta({2, 3}) or
+							dest == offset_to_delta({3, 3}) or
+//							dest == offset_to_delta({3, 4}) or
+							false
+						)) or
+						(turn == Player::BLACK and (
+//							dest == offset_to_delta({1, 0}) or
+							dest == offset_to_delta({1, 1}) or
+							dest == offset_to_delta({2, 1}) or
+							dest == offset_to_delta({3, 1}) or
+//							dest == offset_to_delta({3, 0}) or
+							false
+						))
+					);
+
 					assert(dest < 256);
-					Move move = dest + (piece_index << 8) + (hand_index << 11) + (((Move)card) << 12);
-					if (is_loud_move) {
-						*next_output++ = move;
-						gen_count++;
+					Move move = dest + (piece_index << 8) + (hand_index << 11); //+ (((Move)card) << 12);
+					if (is_winning) {
+						moves_scratch[0][moves_by_priority[0]++] = move;
+					} else if (is_loud_move) {
+						moves_scratch[1][moves_by_priority[1]++] = move;
+					} else if (temple_threatening) {
+						moves_scratch[2][moves_by_priority[2]++] = move;
 					} else {
-						quiet_move_scratch[quiet_moves++] = move;
+						// Determine if the move moves forward or not.
+						if (original_jump > 3) {
+							moves_scratch[3][moves_by_priority[3]++] = move;
+						} else {
+							moves_scratch[4][moves_by_priority[4]++] = move;
+						}
 					}
 				}
 			}
 		}
-		for (int i = 0; i < quiet_moves; i++) {
-			*next_output++ = quiet_move_scratch[i];
-			gen_count++;
+		int gen_count = 0;
+		for (int p = 0; p < PRIORITY_COUNT; p++) {
+			for (int i = 0; i < moves_by_priority[p]; i++) {
+				*move_buffer++ = moves_scratch[p][i];
+				gen_count++;
+			}
 		}
 		assert(gen_count <= MAX_LEGAL_MOVES);
 		return gen_count;
@@ -760,6 +834,10 @@ int main() {
 //	return 0;
 
 //	Move moves[MAX_LEGAL_MOVES];
+//	Card hand_state[16];
+//	for (int i = 0; i < 16; i++)
+//		hand_state[i] = i;
+//	std::shuffle(&hand_state[0], &hand_state[16], rng);
 	uint8_t hand_state[] = {0, 1, 13, 3, 4};
 //	uint8_t hand_state[] = {2, 3, 0, 1, 4};
 	auto state = OnitamaState::starting_state(hand_state);
@@ -768,7 +846,7 @@ int main() {
 
 	OnitamaEngine engine;
 
-	for (int depth = 1; depth <= 13; depth++) {
+	for (int depth = 1; depth <= 1000; depth++) {
 //		int score = engine.pvs(state, depth, -10000, 10000);
 		int score = engine.pvs(state, depth, -10000, 10000);
 		std::cout << "Depth: " << depth << " Root score: " << score << std::endl;
