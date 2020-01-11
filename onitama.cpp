@@ -448,7 +448,7 @@ int make_mate_scores_much_less_extreme(int score) {
 struct OnitamaEngine {
 	std::unordered_map<uint64_t, Move> move_order_table;
 	uint64_t nodes_reached = 0;
-	int play_randomization = 0;
+	int play_randomization = 10;
 	std::vector<int> king_score_table = default_king_score_table;
 	std::vector<int> pawn_score_table = default_pawn_score_table;
 	std::vector<Move> killer_moves{std::vector<Move>(100, BAD_MOVE)};
@@ -478,7 +478,7 @@ struct OnitamaEngine {
 	}
 
 	template <bool quiescence=false>
-	int pvs(const OnitamaState& state, int depth, int alpha, int beta, Move* best_move_seen_ptr=nullptr) {
+	int pvs(const OnitamaState& state, int depth, int alpha, int beta, Move* best_move_seen_ptr=nullptr, bool apply_randomization=false) {
 		if (time_limit_up)
 			return 123456789;
 		nodes_reached++;
@@ -486,7 +486,7 @@ struct OnitamaEngine {
 		if (depth == 0 or result != Player::NOBODY) {
 			if (quiescence or (result != Player::NOBODY))
 				return heuristic_score(state);
-			return pvs<true>(state, 10, alpha, beta);
+			return make_mate_scores_much_less_extreme(pvs<true>(state, 10, alpha, beta));
 		}
 
 		constexpr int MAX_PADDING = 2;
@@ -553,8 +553,11 @@ struct OnitamaEngine {
 				if (alpha < score and score < beta)
 					score = -pvs<quiescence>(child_state, depth - 1, -beta, -score);
 			}
-			if (score > best_score_seen) {
-				best_score_seen = score;
+			int score_for_comparison = score;
+			if (apply_randomization)
+				score_for_comparison += std::uniform_int_distribution<int>(0, play_randomization)(rng);
+			if (score_for_comparison > best_score_seen) {
+				best_score_seen = score_for_comparison;
 				best_move_seen = moves[i];
 			}
 #ifdef USE_TABLE
@@ -610,7 +613,7 @@ struct OnitamaEngine {
 					best_move = moves[i];
 				}
 			}*/
-			int score = pvs(state, i_depth, -SCORE_INF, SCORE_INF, &best_move);
+			int score = pvs(state, i_depth, -SCORE_INF, SCORE_INF, &best_move, true);
 			if (time_limit_up)
 				break;
 			std::cout << "info depth " << i_depth << " nodes " << nodes_reached << " score " << score << std::endl;
@@ -907,7 +910,8 @@ void do_elo_testing() {
 
 void uoi() {
 	OnitamaEngine engine;
-	OnitamaState state;
+	Card hand_state[5] = {1, 2, 3, 4, 5};
+	OnitamaState state = OnitamaState::starting_state(hand_state);
 	auto get_card = []() {
 		std::string card_name;
 		std::cin >> card_name;
@@ -976,7 +980,7 @@ void uoi() {
 					std::cout << "bestmove loss" << std::endl;
 				continue;
 			}
-			Move m = engine.compute_best_move(state, 100, ms * 1e-3);
+			Move m = engine.compute_best_move(state, 50, ms * 1e-3);
 			Square dest = m;
 			int piece_index = (m >> 8) & 7;
 			const Square* our_pieces = state.turn == Player::WHITE ? state.white_pieces : state.black_pieces;
