@@ -15,7 +15,7 @@
 #define USE_TABLE
 //#define USE_KILLER
 
-std::random_device rd; 
+std::random_device rd;
 std::mt19937 rng(rd()); // Ugh, only 32 bits of seed.
 //std::mt19937 rng(10001);
 
@@ -197,6 +197,9 @@ static inline void length_four_sort(uint8_t* x) {
 constexpr int PRIORITY_COUNT = 5;
 Move moves_scratch[PRIORITY_COUNT][MAX_LEGAL_MOVES];
 
+struct OnitamaState;
+void print_state(const OnitamaState& state);
+
 struct OnitamaState {
 	Square white_pieces[5];
 	Square black_pieces[5];
@@ -239,13 +242,9 @@ struct OnitamaState {
 		const Square* our_pieces   = turn == Player::WHITE ? white_pieces : black_pieces;
 		const Square* their_pieces = turn == Player::WHITE ? black_pieces : white_pieces;
 		const Card* our_hand = turn == Player::WHITE ? white_hand : black_hand;
-//		int gen_count = 0;
-//		Move* next_output = move_buffer;
-
 		int moves_by_priority[PRIORITY_COUNT]{};
 
-//		int quiet_moves = 0;
-//		Move quiet_move_scratch[MAX_LEGAL_MOVES];
+		assert(game_result() == Player::NOBODY);
 
 		Card sorted_hand[2] = {our_hand[0], our_hand[1]};
 		int did_swap = 0;
@@ -255,7 +254,6 @@ struct OnitamaState {
 		}
 
 		// Try all of our pieces.
-//		for (int piece_index = 0; piece_index < 5; piece_index++) {
 		for (int piece_index : {1, 2, 3, 4, 0}) {
 			if (our_pieces[piece_index] == PIECE_CAPTURED)
 				continue;
@@ -323,6 +321,12 @@ struct OnitamaState {
 				}
 			}
 		}
+		// Add pass moves.
+		if ((not only_loud_moves) and moves_by_priority[0] + moves_by_priority[1] + moves_by_priority[2] + moves_by_priority[3] + moves_by_priority[4] == 0) {
+			// Make king moves that move the king to where it already is.
+			moves_scratch[0][moves_by_priority[0]++] = our_pieces[0] + (0 << 11);
+			moves_scratch[0][moves_by_priority[0]++] = our_pieces[0] + (1 << 11);
+		}
 		int gen_count = 0;
 		for (int p = 0; p < PRIORITY_COUNT; p++) {
 			for (int i = 0; i < moves_by_priority[p]; i++) {
@@ -348,7 +352,6 @@ struct OnitamaState {
 			assert(computed_unoccupied & bit);
 			computed_unoccupied &= ~bit;
 		}
-//		assert(computed_unoccupied == unoccupied_cells);
 	}
 
 	void make_move(Move m) {
@@ -359,8 +362,6 @@ struct OnitamaState {
 		int piece_index = (m >> 8) & 7;
 		int hand_index = (m >> 11) & 1;
 		Square source = our_pieces[piece_index];
-//		unoccupied_cells |= 1ull << source;
-//		unoccupied_cells &= ~(1ull << dest);
 		our_pieces[piece_index] = dest;
 		// Evaluate captures.
 		for (int i = 0; i < 5; i++)
@@ -370,7 +371,6 @@ struct OnitamaState {
 		std::swap(our_hand[hand_index], swap_card);
 		turn = static_cast<Player>(1 - turn);
 		canonicalize();
-//		sanity_check();
 	}
 
 	Player game_result() const {
@@ -404,7 +404,7 @@ int default_pawn_score_table[40] = {
 	-10,  -5, -3, -5, -10,   0, 0, 0,
 };
 
-#else
+#elif 0
 
 std::vector<int> default_king_score_table{
 	-35, -19,  13, -19, -35,   0, 0, 0,
@@ -420,6 +420,24 @@ std::vector<int> default_pawn_score_table{
 	17,  44,  68,  44,  17,   0, 0, 0,
 	31,  75, 104,  75,  31,   0, 0, 0,
 	26,  48,  58,  48,  26,   0, 0, 0,
+};
+
+#else
+
+std::vector<int> default_king_score_table{
+	-29, -21,  -8, -21, -29,   0, 0, 0,
+	-10,  -2,   2,  -2, -10,   0, 0, 0,
+	 16,  29,  45,  29,  16,   0, 0, 0,
+	 58,  86,  98,  86,  58,   0, 0, 0,
+	 64, 100, 200, 100,  64,   0, 0, 0,
+};
+
+std::vector<int> default_pawn_score_table{
+	  6,   5,  11,   5,   6,   0, 0, 0,
+	  5,   8,   7,   8,   5,   0, 0, 0,
+	  3,   6,  10,   6,   3,   0, 0, 0,
+	 -2,  -3,   0,  -3,  -2,   0, 0, 0,
+	 -7,  -5, -20,  -5,  -7,   0, 0, 0,
 };
 
 #endif
@@ -616,7 +634,7 @@ struct OnitamaEngine {
 			int score = pvs(state, i_depth, -SCORE_INF, SCORE_INF, &best_move, true);
 			if (time_limit_up)
 				break;
-			std::cout << "info depth " << i_depth << " nodes " << nodes_reached << " score " << score << std::endl;
+//			std::cout << "info depth " << i_depth << " nodes " << nodes_reached << " score " << score << std::endl;
 		}
 
 		if (t != nullptr)
@@ -752,7 +770,7 @@ int calibration_self_play_game(OnitamaEngine& engine, std::vector<int>& king_win
 		dest.at(location)++;
 	};
 	while (state.game_result() == Player::NOBODY) {
-		Move m = engine.compute_best_move(state, 3);
+		Move m = engine.compute_best_move(state, 5);
 		state.make_move(m);
 		track_piece(state.white_pieces[0], white_king_occurences);
 		track_piece(state.black_pieces[0], black_king_occurences);
@@ -761,7 +779,7 @@ int calibration_self_play_game(OnitamaEngine& engine, std::vector<int>& king_win
 			track_piece(state.black_pieces[i], black_pawn_occurences);
 		}
 		plies++;
-		if (plies >= 100)
+		if (plies >= 200)
 			break;
 	}
 	if (state.game_result() == Player::NOBODY)
@@ -787,9 +805,9 @@ void do_self_play_piece_table_calibration() {
 	std::vector<int> pawn_wins(40), pawn_losses(40);
 
 	OnitamaEngine engine;
-	engine.play_randomization = 20;
+	engine.play_randomization = 40;
 
-	for (int i = 0; i < 100; i++) {
+	for (int i = 0; i < 10000; i++) {
 		int plies = calibration_self_play_game(engine, king_wins, king_losses, pawn_wins, pawn_losses);
 		if (i % 10 == 0)
 			std::cout << "[" << i << "] Generated game of: " << plies << std::endl;
@@ -846,8 +864,8 @@ void do_self_play_piece_table_calibration() {
 	}
 
 	for (int i = 0; i < 40; i++) {
-		king_value[i] /= 1000;
-		pawn_value[i] /= 1000;
+		king_value[i] /= 500;
+		pawn_value[i] /= 500;
 	}
 
 	std::cout << "Symmetrized:" << std::endl;
@@ -1006,8 +1024,8 @@ int main() {
 	return 0;
 
 //	do_elo_testing();
-//	do_self_play_piece_table_calibration();
-//	return 0;
+	do_self_play_piece_table_calibration();
+	return 0;
 
 //	Move moves[MAX_LEGAL_MOVES];
 //	Card hand_state[16];
