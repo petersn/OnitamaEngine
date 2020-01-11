@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-import subprocess, time, argparse, random
+import subprocess, datetime, time, argparse, random
 
 cards = """
 rabbit
@@ -38,6 +38,7 @@ class Player:
 
 	def genmove(self, seconds):
 		self.send("genmove %i\n" % (int(1e3 * seconds),))
+		start_time = time.time()
 		while True:
 			line = self.proc.stdout.readline().strip().decode("utf8")
 			if not line:
@@ -45,6 +46,9 @@ class Player:
 			if line.startswith("info "):
 				print(line)
 			if line.startswith("bestmove "):
+				elapsed = time.time() - start_time
+				if elapsed > seconds:
+					print("WARNING:", self.cmd, "used", elapsed, "when it was only allotted", seconds)
 				return line.split(" ", 1)[1]
 
 	def quit(self):
@@ -56,8 +60,8 @@ class Player:
 			pass
 		self.proc.wait()
 
-def write_game(args, p1_name, p2_name, moves, outcome):
-	with open(path, "a+") as f:
+def write_game(args, p1_name, p2_name, opening, moves, outcome):
+	with open(args.pgn_out, "a+") as f:
 		print('[Event "?"]', file=f)
 		print('[Site "?"]', file=f)
 		print('[Date "%s"]' % (datetime.datetime.now().strftime("%Y.%m.%d"),), file=f)
@@ -74,7 +78,7 @@ def write_game(args, p1_name, p2_name, moves, outcome):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--engine", metavar="CMD", action="append", help="Engine command.")
-parser.add_argument("--pgn-out", metavar="PATH", type=str, default=None, help="PHN path to output games to.")
+parser.add_argument("--pgn-out", metavar="PATH", type=str, default=None, help="PGN path to output games to.")
 parser.add_argument("--tc", metavar="SEC", type=float, default=1.0, help="Seconds per move.")
 
 if __name__ == "__main__":
@@ -108,19 +112,20 @@ if __name__ == "__main__":
 		for player in players:
 			player.quit()
 
-		write_game(
-			args,
-			p1_name=engine_commands[0],
-			p2_name=engine_commands[1],
-			opening=opening,
-			moves=moves,
-			outcome={
-				(False, "win"):  "1-0",
-				(True,  "win"):  "0-1",
-				(False, "loss"): "0-1",
-				(True,  "loss"): "1-0",
-			}[move] if move != "draw" else "1/2-1/2",
-		)
+		if args.pgn_out is not None:
+			write_game(
+				args,
+				p1_name=engine_commands[0],
+				p2_name=engine_commands[1],
+				opening=opening,
+				moves=all_moves,
+				outcome={
+					(False, "win"):  "1-0",
+					(True,  "win"):  "0-1",
+					(False, "loss"): "0-1",
+					(True,  "loss"): "1-0",
+				}[flipped, move] if move != "draw" else "1/2-1/2",
+			)
 
 		engine_commands.reverse()
 		flipped = not flipped
