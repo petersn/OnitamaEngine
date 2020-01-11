@@ -37,6 +37,10 @@ static inline SquareDelta offset_to_delta(std::pair<int, int> p) {
 	return p.first + 8 * p.second;
 }
 
+static inline std::pair<int, int> delta_to_offset(SquareDelta sd) {
+	return {sd % 8, sd / 8};
+}
+
 std::vector<std::vector<std::pair<int, int>>> cards_source{
 	// Rabbit
 	{{-1, -1}, {1, 1}, {2, 0}},
@@ -244,8 +248,11 @@ struct OnitamaState {
 //		Move quiet_move_scratch[MAX_LEGAL_MOVES];
 
 		Card sorted_hand[2] = {our_hand[0], our_hand[1]};
-		if (card_score[sorted_hand[0]] < card_score[sorted_hand[1]])
+		int did_swap = 0;
+		if (card_score[sorted_hand[0]] < card_score[sorted_hand[1]]) {
 			std::swap(sorted_hand[0], sorted_hand[1]);
+			did_swap = 1;
+		}
 
 		// Try all of our pieces.
 //		for (int piece_index = 0; piece_index < 5; piece_index++) {
@@ -298,7 +305,7 @@ struct OnitamaState {
 					);
 
 					assert(dest < 256);
-					Move move = dest + (piece_index << 8) + (hand_index << 11); //+ (((Move)card) << 12);
+					Move move = dest + (piece_index << 8) + ((did_swap ^ hand_index) << 11); //+ (((Move)card) << 12);
 					if (is_winning) {
 						moves_scratch[0][moves_by_priority[0]++] = move;
 					} else if (is_loud_move) {
@@ -893,6 +900,7 @@ void uoi() {
 				hand_state[i] = get_card();
 			state = OnitamaState::starting_state(hand_state);
 			std::cout << "info new game." << std::endl;
+//			print_state(state);
 		}
 		if (cmd == "move") {
 			Card c = get_card();
@@ -926,6 +934,7 @@ void uoi() {
 			assert(found_move != BAD_MOVE);
 			state.make_move(found_move);
 			std::cout << "info Making move: " << found_move << std::endl;
+//			print_state(state);
 		}
 		if (cmd == "genmove") {
 			int ms = get_int();
@@ -947,7 +956,11 @@ void uoi() {
 			Square source = our_pieces[piece_index];
 			int m_hand_index = (m >> 11) & 1;
 			const Card* our_hand = state.turn == Player::WHITE ? state.white_hand : state.black_hand;
+//			std::cout << "Our move: " << m << std::endl;
+//			std::cout << "Piece: " << piece_index << std::endl;
 			std::cout << "bestmove " << card_names[our_hand[m_hand_index]] << " " << (source % 8) << " " << (source / 8) << " " << (dest % 8) << " " << (dest / 8) << std::endl;
+//			state.make_move(m);
+//			print_state(state);
 		}
 		if (cmd == "quit") {
 			return;
