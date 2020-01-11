@@ -72,6 +72,10 @@ def write_game(args, p1_name, p2_name, opening, moves, outcome):
 		print('[Plycount "%i"]' % (len(moves),), file=f)
 		print('[Result "%s"]' % (outcome,), file=f)
 		print('[TimeControl "+%r"]' % (args.tc,), file=f)
+		if outcome == "1-0":
+			print('[WinningPlayer "%s"]' % (p1_name,), file=f)
+		if outcome == "0-1":
+			print('[WinningPlayer "%s"]' % (p2_name,), file=f)
 		print(file=f)
 		print(" ".join(moves), file=f)
 		print(file=f)
@@ -111,6 +115,10 @@ if __name__ == "__main__":
 				player.move(move)
 			players.reverse()
 			flipped = not flipped
+			if len(all_moves) > 100:
+				print("Uh oh! Loop detected!\n"*10)
+				move = "draw"
+				break
 
 		for player in players:
 			player.quit()

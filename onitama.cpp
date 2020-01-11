@@ -437,6 +437,14 @@ int make_mate_scores_slightly_less_extreme(int score) {
 	return score;
 }
 
+int make_mate_scores_much_less_extreme(int score) {
+	if (score < -10000)
+		return score + 1000;
+	if (score > 10000)
+		return score - 1000;
+	return score;
+}
+
 struct OnitamaEngine {
 	std::unordered_map<uint64_t, Move> move_order_table;
 	uint64_t nodes_reached = 0;
@@ -523,6 +531,13 @@ struct OnitamaEngine {
 		int best_score_seen = -SCORE_INF;
 		Move best_move_seen = BAD_MOVE;
 
+		// If we're in a quiescence search then you're allowed to pass.
+		if (quiescence) {
+			alpha = std::max(alpha, heuristic_score(state));
+			if (alpha >= beta)
+				goto done_with_search;
+		}
+
 		for (int i = 0; i < move_count; i++) {
 			// Skip sentinels.
 			if (moves[i] == BAD_MOVE)
@@ -555,6 +570,7 @@ struct OnitamaEngine {
 				break;
 			}
 		}
+		done_with_search:;
 		if (best_move_seen_ptr != nullptr)
 			*best_move_seen_ptr = best_move_seen;
 		return make_mate_scores_slightly_less_extreme(alpha);
