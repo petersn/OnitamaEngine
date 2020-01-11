@@ -470,7 +470,7 @@ struct OnitamaEngine {
 	}
 
 	template <bool quiescence=false>
-	int pvs(const OnitamaState& state, int depth, int alpha, int beta) {
+	int pvs(const OnitamaState& state, int depth, int alpha, int beta, Move* best_move_seen_ptr=nullptr) {
 		if (time_limit_up)
 			return 123456789;
 		nodes_reached++;
@@ -520,6 +520,9 @@ struct OnitamaEngine {
 		}
 #endif
 
+		int best_score_seen = -SCORE_INF;
+		Move best_move_seen = BAD_MOVE;
+
 		for (int i = 0; i < move_count; i++) {
 			// Skip sentinels.
 			if (moves[i] == BAD_MOVE)
@@ -535,6 +538,10 @@ struct OnitamaEngine {
 				if (alpha < score and score < beta)
 					score = -pvs<quiescence>(child_state, depth - 1, -beta, -score);
 			}
+			if (score > best_score_seen) {
+				best_score_seen = score;
+				best_move_seen = moves[i];
+			}
 #ifdef USE_TABLE
 			if (score > alpha and (not quiescence) and (not time_limit_up))
 				move_order_table[state_hash] = moves[i];
@@ -548,6 +555,8 @@ struct OnitamaEngine {
 				break;
 			}
 		}
+		if (best_move_seen_ptr != nullptr)
+			*best_move_seen_ptr = best_move_seen;
 		return make_mate_scores_slightly_less_extreme(alpha);
 	}
 
@@ -562,13 +571,14 @@ struct OnitamaEngine {
 		if (time_limit_seconds != -1)
 			t = std::make_unique<std::thread>(OnitamaEngine::set_limit_up, time_limit_seconds, this);
 
-		Move moves[MAX_LEGAL_MOVES];
-		int move_count = state.move_gen(moves);
-		int best_score_so_far = -SCORE_INF;
-		Move best_move;
+//		Move moves[MAX_LEGAL_MOVES];
+//		int move_count = state.move_gen(moves);
+//		int best_score_so_far = -SCORE_INF;
+		Move best_move = BAD_MOVE;
 
 		// Iteratively deepen.
 		for (int i_depth = 1; i_depth <= depth; i_depth++) {
+			/*
 			for (int i = 0; i < move_count; i++) {
 				if (time_limit_up && i_depth != 1)
 					break;
@@ -583,10 +593,11 @@ struct OnitamaEngine {
 					best_score_so_far = score;
 					best_move = moves[i];
 				}
-			}
+			}*/
+			int score = pvs(state, i_depth, -SCORE_INF, SCORE_INF, &best_move);
 			if (time_limit_up)
 				break;
-			std::cout << "info depth " << i_depth << " nodes " << nodes_reached << " score " << best_score_so_far << std::endl;
+			std::cout << "info depth " << i_depth << " nodes " << nodes_reached << " score " << score << std::endl;
 		}
 
 		if (t != nullptr)
@@ -949,7 +960,7 @@ void uoi() {
 					std::cout << "bestmove loss" << std::endl;
 				continue;
 			}
-			Move m = engine.compute_best_move(state, 10000, ms * 1e-3);
+			Move m = engine.compute_best_move(state, 100, ms * 1e-3);
 			Square dest = m;
 			int piece_index = (m >> 8) & 7;
 			const Square* our_pieces = state.turn == Player::WHITE ? state.white_pieces : state.black_pieces;
