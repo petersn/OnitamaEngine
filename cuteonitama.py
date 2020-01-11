@@ -85,7 +85,6 @@ if __name__ == "__main__":
 	args = parser.parse_args()
 	assert len(args.engine) == 2
 	engine_commands = list(args.engine)
-	flipped = False
 
 	while True:
 		print("Playing %s - %s" % tuple(engine_commands))
@@ -95,6 +94,7 @@ if __name__ == "__main__":
 		for player in players:
 			player.new_game(opening)
 
+		flipped = False
 		all_moves = []
 		while True:
 			move = players[0].genmove(args.tc)
@@ -108,6 +108,7 @@ if __name__ == "__main__":
 			for player in players:
 				player.move(move)
 			players.reverse()
+			flipped = not flipped
 
 		for player in players:
 			player.quit()
@@ -128,5 +129,4 @@ if __name__ == "__main__":
 			)
 
 		engine_commands.reverse()
-		flipped = not flipped
 
