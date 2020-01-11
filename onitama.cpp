@@ -8,6 +8,9 @@
 #include <cassert>
 #include <random>
 #include <algorithm>
+#include <thread>
+#include <ctime>
+#include <atomic>
 
 #define USE_TABLE
 //#define USE_KILLER
@@ -28,6 +31,7 @@ typedef int SquareDelta;
 
 constexpr Square PIECE_CAPTURED = 128;
 constexpr int MAX_LEGAL_MOVES = 4 * 5 * 2;
+constexpr int SCORE_INF = 1000000;
 
 static inline SquareDelta offset_to_delta(std::pair<int, int> p) {
 	return p.first + 8 * p.second;
@@ -69,22 +73,22 @@ std::vector<std::vector<std::pair<int, int>>> cards_source{
 };
 
 std::vector<std::string> card_names {
-	"Rabbit",
-	"Cobra",
-	"Rooster",
-	"Tiger",
-	"Monkey",
-	"Crab",
-	"Crane",
-	"Frog",
-	"Boar",
-	"Horse",
-	"Elephant",
-	"Ox",
-	"Goose",
-	"Dragon",
-	"Mantis",
-	"Eel",
+	"rabbit",
+	"cobra",
+	"rooster",
+	"tiger",
+	"monkey",
+	"crab",
+	"crane",
+	"frog",
+	"boar",
+	"horse",
+	"elephant",
+	"ox",
+	"goose",
+	"dragon",
+	"mantis",
+	"eel",
 };
 
 std::vector<int> card_score {
@@ -121,6 +125,13 @@ std::vector<int> card_score {
 	// Eel
 	3,
 };
+
+Card parse_card_name(std::string card_name) {
+	for (int i = 0; i < card_names.size(); i++)
+		if (card_names[i] == card_name)
+			return i;
+	throw std::runtime_error("Bad card name: " + card_name);
+}
 
 struct CardDesc {
 	int jump_count;
@@ -411,6 +422,14 @@ uint64_t state_to_hash(const OnitamaState& state) {
 	return as_blocks[0] + as_blocks[1]  * 7;
 }
 
+int make_mate_scores_slightly_less_extreme(int score) {
+	if (score < -10000)
+		return score + 1;
+	if (score > 10000)
+		return score - 1;
+	return score;
+}
+
 struct OnitamaEngine {
 	std::unordered_map<uint64_t, Move> move_order_table;
 	uint64_t nodes_reached = 0;
@@ -418,6 +437,7 @@ struct OnitamaEngine {
 	std::vector<int> king_score_table = default_king_score_table;
 	std::vector<int> pawn_score_table = default_pawn_score_table;
 	std::vector<Move> killer_moves{std::vector<Move>(100, BAD_MOVE)};
+	std::atomic<bool> time_limit_up;
 
 	int heuristic_score(const OnitamaState& state) {
 		// Get one point for each.
@@ -444,6 +464,8 @@ struct OnitamaEngine {
 
 	template <bool quiescence=false>
 	int pvs(const OnitamaState& state, int depth, int alpha, int beta) {
+		if (time_limit_up)
+			return 123456789;
 		nodes_reached++;
 		Player result = state.game_result();
 		if (depth == 0 or result != Player::NOBODY) {
@@ -507,39 +529,62 @@ struct OnitamaEngine {
 					score = -pvs<quiescence>(child_state, depth - 1, -beta, -score);
 			}
 #ifdef USE_TABLE
-			if (score > alpha and not quiescence)
+			if (score > alpha and (not quiescence) and (not time_limit_up))
 				move_order_table[state_hash] = moves[i];
 #endif
 			alpha = std::max(alpha, score);
 			if (alpha >= beta) {
 #ifdef USE_KILLER
-				if (not quiescence)
+				if ((not quiescence) and (not time_limit_up))
 					killer_moves[depth] = moves[i];
 #endif
 				break;
 			}
 		}
-		return alpha;
+		return make_mate_scores_slightly_less_extreme(alpha);
 	}
 
-	Move compute_best_move(const OnitamaState& state, int depth) {
+	static void set_limit_up(double time_limit_seconds, OnitamaEngine* self) {
+		std::this_thread::sleep_for(std::chrono::duration<double>(time_limit_seconds));
+		self->time_limit_up = true;
+	}
+
+	Move compute_best_move(const OnitamaState& state, int depth, double time_limit_seconds=-1) {
+		time_limit_up = false;
+		std::unique_ptr<std::thread> t;
+		if (time_limit_seconds != -1)
+			t = std::make_unique<std::thread>(OnitamaEngine::set_limit_up, time_limit_seconds, this);
+
 		Move moves[MAX_LEGAL_MOVES];
 		int move_count = state.move_gen(moves);
-		int best_score_so_far = -10000;
+		int best_score_so_far = -SCORE_INF;
 		Move best_move;
-		for (int i = 0; i < move_count; i++) {
-			OnitamaState child_state = state;
-			child_state.make_move(moves[i]);
-			// Iteratively deepen.
-			int score;
-			for (int i_depth = 1; i_depth <= depth; i_depth++)
-				score = -pvs(child_state, i_depth, -10000, 10000);
-			score += std::uniform_int_distribution<int>(0, play_randomization)(rng);
-			if (score > best_score_so_far) {
-				best_score_so_far = score;
-				best_move = moves[i];
+
+		// Iteratively deepen.
+		for (int i_depth = 1; i_depth <= depth; i_depth++) {
+			for (int i = 0; i < move_count; i++) {
+				if (time_limit_up && i_depth != 1)
+					break;
+				OnitamaState child_state = state;
+				child_state.make_move(moves[i]);
+				int score = -pvs(child_state, i_depth, -SCORE_INF, SCORE_INF);
+				// Need to check again, because pvs' result might be invalid.
+				if (time_limit_up)
+					break;
+				score += std::uniform_int_distribution<int>(0, play_randomization)(rng);
+				if (score > best_score_so_far) {
+					best_score_so_far = score;
+					best_move = moves[i];
+				}
 			}
+			if (time_limit_up)
+				break;
+			std::cout << "info depth " << i_depth << " nodes " << nodes_reached << " score " << best_score_so_far << std::endl;
 		}
+
+		if (t != nullptr)
+			t->join();
+
 		return best_move;
 	}
 };
@@ -826,8 +871,95 @@ void do_elo_testing() {
 
 }
 
+void uoi() {
+	OnitamaEngine engine;
+	OnitamaState state;
+	auto get_card = []() {
+		std::string card_name;
+		std::cin >> card_name;
+		return parse_card_name(card_name);
+	};
+	auto get_int = []() {
+		int i;
+		std::cin >> i;
+		return i;
+	};
+	while (true) {
+		std::string cmd;
+		std::cin >> cmd;
+		if (cmd == "newgame") {
+			Card hand_state[5]{};
+			for (int i = 0; i < 5; i++)
+				hand_state[i] = get_card();
+			state = OnitamaState::starting_state(hand_state);
+			std::cout << "info new game." << std::endl;
+		}
+		if (cmd == "move") {
+			Card c = get_card();
+			// Find the card that matches in our hand.
+			const Card* our_hand = state.turn == Player::WHITE ? state.white_hand : state.black_hand;
+			int hand_index;
+			if (our_hand[0] == c) {
+				hand_index = 0;
+			} else if (our_hand[1] == c) {
+				hand_index = 1;
+			} else {
+				assert(false);
+			}
+			int source_x = get_int();
+			int source_y = get_int();
+			int dest_x = get_int();
+			int dest_y = get_int();
+			Move moves[MAX_LEGAL_MOVES];
+			int move_count = state.move_gen(moves);
+			Move found_move = BAD_MOVE;
+			for (int i = 0; i < move_count; i++) {
+				Move m = moves[i];
+				Square dest = m;
+				int piece_index = (m >> 8) & 7;
+				int m_hand_index = (m >> 11) & 1;
+				const Square* our_pieces = state.turn == Player::WHITE ? state.white_pieces : state.black_pieces;
+				Square source = our_pieces[piece_index];
+				if (source == offset_to_delta({source_x, source_y}) and dest == offset_to_delta({dest_x, dest_y}) and hand_index == m_hand_index)
+					found_move = m;
+			}
+			assert(found_move != BAD_MOVE);
+			state.make_move(found_move);
+			std::cout << "info Making move: " << found_move << std::endl;
+		}
+		if (cmd == "genmove") {
+			int ms = get_int();
+//			std::cout << "info Thinking for: " << ms << std::endl;
+			// Apply a little bit of safety.
+			ms = std::min(ms, std::max(5, ms - 10));
+			// Adjudicate the game.
+			if (state.game_result() != Player::NOBODY) {
+				if (state.game_result() == state.turn)
+					std::cout << "bestmove win" << std::endl;
+				else
+					std::cout << "bestmove loss" << std::endl;
+				continue;
+			}
+			Move m = engine.compute_best_move(state, 10000, ms * 1e-3);
+			Square dest = m;
+			int piece_index = (m >> 8) & 7;
+			const Square* our_pieces = state.turn == Player::WHITE ? state.white_pieces : state.black_pieces;
+			Square source = our_pieces[piece_index];
+			int m_hand_index = (m >> 11) & 1;
+			const Card* our_hand = state.turn == Player::WHITE ? state.white_hand : state.black_hand;
+			std::cout << "bestmove " << card_names[our_hand[m_hand_index]] << " " << (source % 8) << " " << (source / 8) << " " << (dest % 8) << " " << (dest / 8) << std::endl;
+		}
+		if (cmd == "quit") {
+			return;
+		}
+	}
+}
+
 int main() {
 	setup_onitama();
+
+	uoi();
+	return 0;
 
 //	do_elo_testing();
 //	do_self_play_piece_table_calibration();
@@ -847,8 +979,8 @@ int main() {
 	OnitamaEngine engine;
 
 	for (int depth = 1; depth <= 1000; depth++) {
-//		int score = engine.pvs(state, depth, -10000, 10000);
-		int score = engine.pvs(state, depth, -10000, 10000);
+//		int score = engine.pvs(state, depth, -SCORE_INF, SCORE_INF);
+		int score = engine.pvs(state, depth, -SCORE_INF, SCORE_INF);
 		std::cout << "Depth: " << depth << " Root score: " << score << std::endl;
 	}
 	std::cout << "Nodes explored: " << engine.nodes_reached << std::endl;
