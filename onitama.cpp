@@ -476,7 +476,7 @@ struct OnitamaEngine {
 		nodes_reached++;
 		Player result = state.game_result();
 		if (depth == 0 or result != Player::NOBODY) {
-			if (quiescence or true)
+			if (quiescence or (result != Player::NOBODY))
 				return heuristic_score(state);
 			return pvs<true>(state, 10, alpha, beta);
 		}
