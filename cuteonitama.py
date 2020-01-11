@@ -85,12 +85,14 @@ if __name__ == "__main__":
 	args = parser.parse_args()
 	assert len(args.engine) == 2
 	engine_commands = list(args.engine)
-
+	engines_flipped = False
+	
 	while True:
 		print("Playing %s - %s" % tuple(engine_commands))
 		players = list(map(Player, engine_commands))
 
-		opening = random.sample(cards, 5)
+		if not engines_flipped:
+			opening = random.sample(cards, 5)
 		for player in players:
 			player.new_game(opening)
 
@@ -129,4 +131,5 @@ if __name__ == "__main__":
 			)
 
 		engine_commands.reverse()
+		engines_flipped = not engines_flipped
 
