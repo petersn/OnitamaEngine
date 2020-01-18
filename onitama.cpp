@@ -14,6 +14,11 @@
 
 #define USE_TABLE
 //#define USE_KILLER
+//#define CHECK_TIME
+
+#ifndef CHECK_TIME
+constexpr bool time_limit_up = false;
+#endif
 
 std::random_device rd;
 std::mt19937 rng(rd()); // Ugh, only 32 bits of seed.
@@ -404,7 +409,7 @@ int default_pawn_score_table[40] = {
 	-10,  -5, -3, -5, -10,   0, 0, 0,
 };
 
-#elif 0
+#elif 1
 
 std::vector<int> default_king_score_table{
 	-35, -19,  13, -19, -35,   0, 0, 0,
@@ -470,7 +475,9 @@ struct OnitamaEngine {
 	std::vector<int> king_score_table = default_king_score_table;
 	std::vector<int> pawn_score_table = default_pawn_score_table;
 	std::vector<Move> killer_moves{std::vector<Move>(100, BAD_MOVE)};
+#ifdef CHECK_TIME
 	std::atomic<bool> time_limit_up;
+#endif
 
 	int heuristic_score(const OnitamaState& state) {
 		// Get one point for each.
@@ -479,7 +486,7 @@ struct OnitamaEngine {
 			return result == state.turn ? 99999 : -99999;
 
 		// Tempo bonus.
-		int score_for_white = state.turn == Player::WHITE ? 15 : -15;
+		int score_for_white = 0; //state.turn == Player::WHITE ? 15 : -15;
 		score_for_white += king_score_table[state.white_pieces[0]] / 2;
 		score_for_white -= king_score_table[36 - state.black_pieces[0]] / 2;
 		for (int i = 1; i < 5; i++) {
@@ -599,11 +606,15 @@ struct OnitamaEngine {
 
 	static void set_limit_up(double time_limit_seconds, OnitamaEngine* self) {
 		std::this_thread::sleep_for(std::chrono::duration<double>(time_limit_seconds));
+#ifdef CHECK_TIME
 		self->time_limit_up = true;
+#endif
 	}
 
 	Move compute_best_move(const OnitamaState& state, int depth, double time_limit_seconds=-1) {
+#ifdef CHECK_TIME
 		time_limit_up = false;
+#endif
 		std::unique_ptr<std::thread> t;
 		if (time_limit_seconds != -1)
 			t = std::make_unique<std::thread>(OnitamaEngine::set_limit_up, time_limit_seconds, this);
@@ -1020,19 +1031,22 @@ void uoi() {
 int main() {
 	setup_onitama();
 
-	uoi();
-	return 0;
+//	uoi();
+//	return 0;
 
 //	do_elo_testing();
-	do_self_play_piece_table_calibration();
-	return 0;
+//	do_self_play_piece_table_calibration();
+//	return 0;
 
-//	Move moves[MAX_LEGAL_MOVES];
-//	Card hand_state[16];
-//	for (int i = 0; i < 16; i++)
-//		hand_state[i] = i;
-//	std::shuffle(&hand_state[0], &hand_state[16], rng);
-	uint8_t hand_state[] = {0, 1, 13, 3, 4};
+	Move moves[MAX_LEGAL_MOVES];
+	Card hand_state[16];
+	for (int i = 0; i < 16; i++)
+		hand_state[i] = i;
+	std::shuffle(&hand_state[0], &hand_state[16], rng);
+	for (int i = 0; i < 5; i++) {
+		std::cout << "Card: " << card_names[hand_state[i]] << std::endl;
+	}
+//	uint8_t hand_state[] = {0, 1, 13, 3, 4};
 //	uint8_t hand_state[] = {2, 3, 0, 1, 4};
 	auto state = OnitamaState::starting_state(hand_state);
 
