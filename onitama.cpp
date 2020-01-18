@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cassert>
 #include <random>
+#include <chrono>
 #include <algorithm>
 
 #define USE_TABLE
@@ -846,10 +847,14 @@ int main() {
 
 	OnitamaEngine engine;
 
+	auto start = std::chrono::high_resolution_clock::now();
+
 	for (int depth = 1; depth <= 1000; depth++) {
 //		int score = engine.pvs(state, depth, -10000, 10000);
 		int score = engine.pvs(state, depth, -10000, 10000);
-		std::cout << "Depth: " << depth << " Root score: " << score << std::endl;
+		auto end = std::chrono::high_resolution_clock::now();
+		std::chrono::duration<double> elapsed = end - start;
+		std::cout << "Depth: " << depth << " Root score: " << score << " Nodes: " << engine.nodes_reached << " Table size: " << engine.move_order_table.size() << " Seconds: " << elapsed.count() << std::endl;
 	}
 	std::cout << "Nodes explored: " << engine.nodes_reached << std::endl;
 	std::cout << "Table size: " << engine.move_order_table.size() << std::endl;
